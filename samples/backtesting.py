@@ -1,6 +1,5 @@
 import time
-from datetime import datetime
-
+from datetime import datetime, timedelta
 import backtrader as bt
 
 from ccxtbt import CCXTFeed
@@ -21,18 +20,21 @@ def main():
     cerebro.addstrategy(TestStrategy)
 
     # Add the feed
-    cerebro.adddata(CCXTFeed(exchange='binance',
-                             dataname='BNB/USDT',
-                             timeframe=bt.TimeFrame.Minutes,
-                             fromdate=datetime(2019, 1, 1, 0, 0),
-                             todate=datetime(2019, 1, 1, 0, 2),
-                             compression=1,
-                             ohlcv_limit=2,
-                             currency='BNB',
-                             retries=5,
-
-                             # 'apiKey' and 'secret' are skipped
-                             config={'enableRateLimit': True, 'nonce': lambda: str(int(time.time() * 1000))}))
+    #hist_start_date = datetime.utcnow() - timedelta(minutes=120)
+    data = CCXTFeed(exchange='binance',
+                    dataname='BNB/USDT',
+                    timeframe=bt.TimeFrame.Minutes,
+                    #fromdate=datetime(2021, 8, 1, 0, 0),
+                    #todate=datetime(2019, 1, 1, 0, 2),
+                    compression=1,
+                    ohlcv_limit=1000,
+                    drop_newest=True,
+                    currency='BNB',
+                    retries=5,
+                    #debug=True,
+                    # 'apiKey' and 'secret' are skipped
+                    config={'enableRateLimit': True, 'nonce': lambda: str(int(time.time() * 1000))})
+    cerebro.adddata(data)
 
     # Run the strategy
     cerebro.run()

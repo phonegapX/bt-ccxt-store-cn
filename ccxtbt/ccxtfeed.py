@@ -22,13 +22,13 @@
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
-import time
-from collections import deque
+#import time
+#from collections import deque
 from datetime import datetime
 
 import backtrader as bt
 from backtrader.feed import DataBase
-from backtrader.utils.py3 import with_metaclass
+from backtrader.utils.py3 import queue, with_metaclass
 
 from .ccxtstore import CCXTStore
 
@@ -66,7 +66,7 @@ class CCXTFeed(with_metaclass(MetaCCXTFeed, DataBase)):
     """
 
     params = (
-        ('historical', False),  # only historical download
+        ('historical', False),      # only historical download
         ('backfill_start', False),  # do backfilling at the start
         ('fetch_ohlcv_params', {}),
         ('ohlcv_limit', 20),
@@ -83,18 +83,17 @@ class CCXTFeed(with_metaclass(MetaCCXTFeed, DataBase)):
     def __init__(self, **kwargs):
         # self.store = CCXTStore(exchange, config, retries)
         self.store = self._store(**kwargs)
-        self._data = deque()  # data queue for price data
-        self._last_id = ''  # last processed trade id for ohlcv
-        self._last_ts = 0  # last processed timestamp for ohlcv
+        self._data = queue.Queue()  # data queue for price data
+        self._last_id = ''          # last processed trade id for ohlcv
+        self._last_ts = int((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds() * 1000) # last processed timestamp for ohlcv
+        self._last_update_bar_time = 0
 
     def start(self, ):
         DataBase.start(self)
-
         if self.p.fromdate:
             self._state = self._ST_HISTORBACK
             self.put_notification(self.DELAYED)
-            self._fetch_ohlcv(self.p.fromdate)
-
+            self._update_bar(self.p.fromdate)
         else:
             self._state = self._ST_LIVE
             self.put_notification(self.LIVE)
@@ -102,21 +101,19 @@ class CCXTFeed(with_metaclass(MetaCCXTFeed, DataBase)):
     def _load(self):
         if self._state == self._ST_OVER:
             return False
-
+        #
         while True:
             if self._state == self._ST_LIVE:
-                if self._timeframe == bt.TimeFrame.Ticks:
-                    return self._load_ticks()
-                else:
-                    self._fetch_ohlcv()
-                    ret = self._load_ohlcv()
-                    if self.p.debug:
-                        print('----     LOAD    ----')
-                        print('{} Load OHLCV Returning: {}'.format(datetime.utcnow(), ret))
-                    return ret
-
+                #===========================================
+                # 每隔一分钟就更新一次bar
+                nts = datetime.now().timestamp()
+                if nts - self._last_update_bar_time > 60:
+                    self._last_update_bar_time = nts
+                    self._update_bar(livemode=True)
+                #===========================================
+                return self._load_bar()
             elif self._state == self._ST_HISTORBACK:
-                ret = self._load_ohlcv()
+                ret = self._load_bar()
                 if ret:
                     return ret
                 else:
@@ -130,126 +127,61 @@ class CCXTFeed(with_metaclass(MetaCCXTFeed, DataBase)):
                         self.put_notification(self.LIVE)
                         continue
 
-    def _fetch_ohlcv(self, fromdate=None):
+    def _update_bar(self, fromdate=None, livemode=False):
         """Fetch OHLCV data into self._data queue"""
+        #想要获取哪个时间粒度下的bar
         granularity = self.store.get_granularity(self._timeframe, self._compression)
-
+        #从哪个时间点开始获取bar
         if fromdate:
-            since = int((fromdate - datetime(1970, 1, 1)).total_seconds() * 1000)
-        else:
-            if self._last_ts > 0:
-                since = self._last_ts
-            else:
-                since = None
-
-        limit = self.p.ohlcv_limit
-
+            self._last_ts = int((fromdate - datetime(1970, 1, 1)).total_seconds() * 1000)
+        #每次获取bar数目的最高限制
+        limit = max(3, self.p.ohlcv_limit) #最少不能少于三个,原因:每次头bar时间重复要忽略,尾bar未完整要去掉,只保留中间的,所以最少三个
+        #
         while True:
-            dlen = len(self._data)
-
-            if self.p.debug:
-                # TESTING
-                since_dt = datetime.utcfromtimestamp(since // 1000) if since is not None else 'NA'
-                print('---- NEW REQUEST ----')
-                print('{} - Requesting: Since TS {} Since date {} granularity {}, limit {}, params'.format(
-                    datetime.utcnow(), since, since_dt, granularity, limit, self.p.fetch_ohlcv_params))
-                data = sorted(self.store.fetch_ohlcv(self.p.dataname, timeframe=granularity,
-                                                     since=since, limit=limit, params=self.p.fetch_ohlcv_params))
-                try:
-                    for i, ohlcv in enumerate(data):
-                        tstamp, open_, high, low, close, volume = ohlcv
-                        print('{} - Data {}: {} - TS {} Time {}'.format(datetime.utcnow(), i,
-                                                                        datetime.utcfromtimestamp(tstamp // 1000),
-                                                                        tstamp, (time.time() * 1000)))
-                        # ------------------------------------------------------------------
-                except IndexError:
-                    print('Index Error: Data = {}'.format(data))
-                print('---- REQUEST END ----')
-            else:
-
-                data = sorted(self.store.fetch_ohlcv(self.p.dataname, timeframe=granularity,
-                                                     since=since, limit=limit, params=self.p.fetch_ohlcv_params))
-
+            #先获取数据长度
+            dlen = self._data.qsize()
+            #
+            bars = sorted(self.store.fetch_ohlcv(self.p.dataname, timeframe=granularity, since=self._last_ts, limit=limit, params=self.p.fetch_ohlcv_params))
             # Check to see if dropping the latest candle will help with
             # exchanges which return partial data
-            if self.p.drop_newest:
-                del data[-1]
-
-            for ohlcv in data:
-
-                # for ohlcv in sorted(self.store.fetch_ohlcv(self.p.dataname, timeframe=granularity,
-                #                                           since=since, limit=limit, params=self.p.fetch_ohlcv_params)):
-
-                if None in ohlcv:
+            if self.p.drop_newest and len(bars) > 0:
+                del bars[-1]
+            #
+            for bar in bars:
+                #获取的bar不能有空值
+                if None in bar:
                     continue
-
-                tstamp = ohlcv[0]
-
-                # Prevent from loading incomplete data
-                # if tstamp > (time.time() * 1000):
-                #    continue
-
+                #bar的时间戳
+                tstamp = bar[0]
+                #通过时间戳判断bar是否为新的bar
                 if tstamp > self._last_ts:
-                    if self.p.debug:
-                        print('Adding: {}'.format(ohlcv))
-                    self._data.append(ohlcv)
+                    self._data.put(bar) #将新的bar保存到队列中
                     self._last_ts = tstamp
-
-            if dlen == len(self._data):
+                    #print(datetime.utcfromtimestamp(tstamp//1000))
+            #如果数据长度没有增长,那证明已经是当前最后一根bar,退出
+            if dlen == self._data.qsize():
+                break
+            #实时模式下,就没必须判断是否是最后一根bar,减少网络通信
+            if livemode:
                 break
 
-    def _load_ticks(self):
-        if self._last_id is None:
-            # first time get the latest trade only
-            trades = [self.store.fetch_trades(self.p.dataname)[-1]]
-        else:
-            trades = self.store.fetch_trades(self.p.dataname)
-
-        for trade in trades:
-            trade_id = trade['id']
-
-            if trade_id > self._last_id:
-                trade_time = datetime.strptime(trade['datetime'], '%Y-%m-%dT%H:%M:%S.%fZ')
-                self._data.append((trade_time, float(trade['price']), float(trade['amount'])))
-                self._last_id = trade_id
-
+    def _load_bar(self):
         try:
-            trade = self._data.popleft()
-        except IndexError:
+            bar = self._data.get(timeout=1)
+        except queue.Empty:
             return None  # no data in the queue
-
-        trade_time, price, size = trade
-
-        self.lines.datetime[0] = bt.date2num(trade_time)
-        self.lines.open[0] = price
-        self.lines.high[0] = price
-        self.lines.low[0] = price
-        self.lines.close[0] = price
-        self.lines.volume[0] = size
-
-        return True
-
-    def _load_ohlcv(self):
-        try:
-            ohlcv = self._data.popleft()
-        except IndexError:
-            return None  # no data in the queue
-
-        tstamp, open_, high, low, close, volume = ohlcv
-
+        tstamp, open_, high, low, close, volume = bar
         dtime = datetime.utcfromtimestamp(tstamp // 1000)
-
         self.lines.datetime[0] = bt.date2num(dtime)
         self.lines.open[0] = open_
         self.lines.high[0] = high
         self.lines.low[0] = low
         self.lines.close[0] = close
         self.lines.volume[0] = volume
-
         return True
 
     def haslivedata(self):
-        return self._state == self._ST_LIVE and self._data
+        return self._state == self._ST_LIVE and not self._data.empty()
 
     def islive(self):
         return not self.p.historical
