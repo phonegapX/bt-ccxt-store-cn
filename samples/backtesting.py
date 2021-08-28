@@ -24,7 +24,7 @@ def main():
     data = CCXTFeed(exchange='binance',
                     dataname='BNB/USDT',
                     timeframe=bt.TimeFrame.Minutes,
-                    #fromdate=datetime(2021, 8, 1, 0, 0),
+                    fromdate=datetime(2021, 8, 1, 0, 0),
                     #todate=datetime(2019, 1, 1, 0, 2),
                     compression=1,
                     ohlcv_limit=1000,

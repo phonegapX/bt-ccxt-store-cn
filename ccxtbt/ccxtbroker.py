@@ -266,7 +266,8 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
         if self.debug:
             print(json.dumps(ccxt_order, indent=self.indent))
 
-        if ccxt_order[self.mappings['closed_order']['key']] == self.mappings['closed_order']['value']:
+        if ((ccxt_order[self.mappings['closed_order']['key']] == self.mappings['closed_order']['value']) or 
+            (ccxt_order[self.mappings['canceled_order']['key']] == self.mappings['canceled_order']['value'])):
             return order
 
         ccxt_order = self.store.cancel_order(oID, order.data.p.dataname)

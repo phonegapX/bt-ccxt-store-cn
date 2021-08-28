@@ -85,8 +85,13 @@ class CCXTFeed(with_metaclass(MetaCCXTFeed, DataBase)):
         self.store = self._store(**kwargs)
         self._data = queue.Queue()  # data queue for price data
         self._last_id = ''          # last processed trade id for ohlcv
-        self._last_ts = int((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds() * 1000) # last processed timestamp for ohlcv
+        self._last_ts = self.utc_to_ts(datetime.utcnow()) # last processed timestamp for ohlcv
         self._last_update_bar_time = 0
+
+    def utc_to_ts(self, dt):
+        fromdate = datetime(dt.year, dt.month, dt.day, dt.hour, dt.minute)
+        epoch = datetime(1970, 1, 1)
+        return int((fromdate - epoch).total_seconds() * 1000)
 
     def start(self, ):
         DataBase.start(self)
@@ -99,12 +104,18 @@ class CCXTFeed(with_metaclass(MetaCCXTFeed, DataBase)):
             self.put_notification(self.LIVE)
 
     def _load(self):
+        """ 
+        return True  代表从数据源获取数据成功
+        return False 代表因为某种原因(比如历史数据源全部数据已经输出完毕)数据源关闭
+        return None  代表暂时无法从数据源获取最新数据,但是以后会有(比如实时数据源中最新的bar还未生成) 
+        """
         if self._state == self._ST_OVER:
             return False
         #
         while True:
             if self._state == self._ST_LIVE:
                 #===========================================
+                # 其实这段代码最好放到独立的工作线程中做,这里纯粹偷懒
                 # 每隔一分钟就更新一次bar
                 nts = datetime.now().timestamp()
                 if nts - self._last_update_bar_time > 60:
@@ -133,7 +144,7 @@ class CCXTFeed(with_metaclass(MetaCCXTFeed, DataBase)):
         granularity = self.store.get_granularity(self._timeframe, self._compression)
         #从哪个时间点开始获取bar
         if fromdate:
-            self._last_ts = int((fromdate - datetime(1970, 1, 1)).total_seconds() * 1000)
+            self._last_ts = self.utc_to_ts(fromdate)
         #每次获取bar数目的最高限制
         limit = max(3, self.p.ohlcv_limit) #最少不能少于三个,原因:每次头bar时间重复要忽略,尾bar未完整要去掉,只保留中间的,所以最少三个
         #
@@ -167,7 +178,7 @@ class CCXTFeed(with_metaclass(MetaCCXTFeed, DataBase)):
 
     def _load_bar(self):
         try:
-            bar = self._data.get(timeout=1)
+            bar = self._data.get(block=False) #不阻塞
         except queue.Empty:
             return None  # no data in the queue
         tstamp, open_, high, low, close, volume = bar
