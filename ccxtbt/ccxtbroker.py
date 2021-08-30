@@ -23,15 +23,17 @@ from __future__ import (absolute_import, division, print_function,
 
 import collections
 import json
+import copy
+from datetime import datetime
 
-from backtrader import BrokerBase, OrderBase, Order
+from backtrader import BrokerBase, Order
 from backtrader.position import Position
 from backtrader.utils.py3 import queue, with_metaclass
 
 from .ccxtstore import CCXTStore
 
 
-class CCXTOrder(OrderBase):
+class CCXTOrder(Order):
     def __init__(self, owner, data, ccxt_order):
         self.owner = owner
         self.data = data
@@ -138,6 +140,8 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
 
         self.startingcash = self.store._cash
         self.startingvalue = self.store._value
+        
+        self._last_op_time = 0
 
     def get_balance(self):
         self.store.get_balance()
@@ -145,11 +149,16 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
         self.value = self.store._value
         return self.cash, self.value
 
-    def get_wallet_balance(self, currency, params={}):
-        balance = self.store.get_wallet_balance(currency, params=params)
-        cash = balance['free'][currency] if balance['free'][currency] else 0
-        value = balance['total'][currency] if balance['total'][currency] else 0
-        return cash, value
+    def get_wallet_balance(self, currencys, params={}):
+        result = {}
+        balance = self.store.get_wallet_balance(params=params)
+        for currency in currencys:
+            cash = balance['free'][currency] if balance['free'][currency] else 0
+            value = balance['total'][currency] if balance['total'][currency] else 0
+            result[currency] = {}
+            result[currency]['cash'] = cash
+            result[currency]['value'] = value
+        return result
 
     def getcash(self):
         # Get cash seems to always be called before get value
@@ -182,7 +191,16 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
     def next(self):
         if self.debug:
             print('Broker next() called')
-        
+        #===========================================
+        # 每隔3秒操作一下
+        nts = datetime.now().timestamp()
+        if nts - self._last_op_time < 3:
+            return
+        self._last_op_time = nts
+        #===========================================
+        self._next()
+
+    def _next(self):
         for o_order in list(self.open_orders):
             oID = o_order.ccxt_order['id']
 
@@ -193,29 +211,52 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
 
             # Get the order
             ccxt_order = self.store.fetch_order(oID, o_order.data.p.dataname)
-            
+
             # Check for new fills
-            if 'trades' in ccxt_order and ccxt_order['trades'] is not None:
-                for fill in ccxt_order['trades']:
-                    if fill not in o_order.executed_fills:
-                        o_order.execute(fill['datetime'], fill['amount'], fill['price'], 
+            if 'trades' in ccxt_order and ccxt_order['trades'] is not None: #判断此订单是否有成交
+                for fill in ccxt_order['trades']: #遍历此订单的所有成交
+                    if fill not in o_order.executed_fills: #该成交是否被处理
+                        fill_id, fill_dt, fill_size, fill_price = fill['id'], fill['datetime'], fill['amount'], fill['price']
+                        o_order.executed_fills.append(fill_id) #记录该成交已经被处理
+                        o_order.execute(fill_dt, fill_size, fill_price, 
                                         0, 0.0, 0.0, 
                                         0, 0.0, 0.0, 
                                         0.0, 0.0,
-                                        0, 0.0)
-                        o_order.executed_fills.append(fill['id'])
+                                        0, 0.0) #处理该成交,内部会标注订单状态,部分成交还是完全成交
+                        #准备通知上层策略
+                        self.get_balance() #刷新账户余额
+                        pos = self.getposition(o_order.data, clone=False) #获取对应仓位
+                        pos.update(fill_size, fill_price) #刷新仓位
+                        self.notify(o_order.clone()) #通知策略
+            else:
+                remaining, status = ccxt_order['remaining'], ccxt_order['status']
+                fill_dt, fill_size, fill_price = ccxt_order['timestamp'], ccxt_order['filled'], ccxt_order['average']
+                o_order.executed.dt = fill_dt
+                o_order.executed.size = fill_size
+                o_order.executed.price = fill_price
+                o_order.executed.remsize = remaining
+                #仓位计算比较麻烦,这里暂时不浪费时间做,需要再说,毕竟只有火币这样奇葩的平台才会这样
+                if status == 'open':
+                    self.get_balance() #刷新账户余额
+                    o_order.partial()
+                    self.notify(o_order.clone()) #通知策略
+                elif status == 'closed':
+                    self.get_balance() #刷新账户余额
+                    o_order.completed()
+                    self.notify(o_order.clone()) #通知策略
 
             if self.debug:
                 print(json.dumps(ccxt_order, indent=self.indent))
 
             # Check if the order is closed
             if ccxt_order[self.mappings['closed_order']['key']] == self.mappings['closed_order']['value']:
-                pos = self.getposition(o_order.data, clone=False)
-                pos.update(o_order.size, o_order.price)
-                o_order.completed()
-                self.notify(o_order)
+                #如果该订单全部成交完成就是此状态,因为上面已经通知过策略,所以这里不再重复通知
                 self.open_orders.remove(o_order)
-                self.get_balance()
+            elif ccxt_order[self.mappings['canceled_order']['key']] == self.mappings['canceled_order']['value']:
+                #考虑两种情况:用户下了限价单没有成交,直接取消了,用户下了限价单部分成交,然后再取消
+                o_order.cancel() #标注订单为取消状态
+                self.notify(o_order.clone()) #通知策略
+                self.open_orders.remove(o_order)
 
     def _submit(self, owner, data, exectype, side, amount, price, params):
         order_type = self.order_types.get(exectype) if exectype else 'market'
@@ -225,14 +266,11 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
         params['created'] = created  # Add timestamp of order creation for backtesting
         ret_ord = self.store.create_order(symbol=data.p.dataname, order_type=order_type, side=side,
                                           amount=amount, price=price, params=params)
-
         _order = self.store.fetch_order(ret_ord['id'], data.p.dataname)
-
         order = CCXTOrder(owner, data, _order)
         order.price = ret_ord['price']
         self.open_orders.append(order)
-
-        self.notify(order)
+        self.notify(order.clone())
         return order
 
     def buy(self, owner, data, size, price=None, plimit=None,
@@ -277,10 +315,11 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
             print('Value Received: {}'.format(ccxt_order[self.mappings['canceled_order']['key']]))
             print('Value Expected: {}'.format(self.mappings['canceled_order']['value']))
 
+        #统一在next函数中处理
+        self._next()
         if ccxt_order[self.mappings['canceled_order']['key']] == self.mappings['canceled_order']['value']:
-            self.open_orders.remove(order)
             order.cancel()
-            self.notify(order)
+
         return order
 
     def get_orders_open(self, safe=False):

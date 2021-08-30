@@ -20,14 +20,15 @@ class TestStrategy(bt.Strategy):
         # NOTE: If you try to get the wallet balance from a wallet you have
         # never funded, a KeyError will be raised! Change LTC below as approriate
         if self.live_data:
-            cash, value = self.broker.get_wallet_balance('ETH')
+            balance = self.broker.get_wallet_balance(['BTC','ETH','USDT'])
+            cash = balance['USDT']['cash']
             if self.live_data and not self.bought:
                 # Buy
                 # size x price should be >10 USDT at a minimum at Binance
                 # make sure you use a price that is below the market price if you don't want to actually buy
-                self.order = self.buy(size=0.01, exectype=Order.Limit, price=1888)
+                self.order = self.buy(size=0.002, exectype=Order.Limit, price=3400)
                 # And immediately cancel the buy order
-                #self.cancel(self.order)
+                self.cancel(self.order)
                 #self.cancel(self.order)
                 self.bought = True
         else:

@@ -147,7 +147,7 @@ class CCXTStore(with_metaclass(MetaSingleton, object)):
         return retry_method
 
     @retry
-    def get_wallet_balance(self, currency, params=None):
+    def get_wallet_balance(self, params=None):
         balance = self.exchange.fetch_balance(params)
         return balance
 
