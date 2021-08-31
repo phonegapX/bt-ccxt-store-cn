@@ -10,7 +10,7 @@ class TestStrategy(bt.Strategy):
     def __init__(self):
         self.sma = bt.indicators.SMA(self.data, period=21)
         self.bought = False
-        
+
     def next(self):
         # Get cash and balance
         # New broker method that will let you get the cash and balance for
@@ -20,7 +20,7 @@ class TestStrategy(bt.Strategy):
         # NOTE: If you try to get the wallet balance from a wallet you have
         # never funded, a KeyError will be raised! Change LTC below as approriate
         if self.live_data:
-            balance = self.broker.get_wallet_balance(['BTC','ETH','USDT'])
+            balance = self.broker.get_wallet_balance(['BTC','ETH','EOS','USDT'])
             cash = balance['USDT']['cash']
             if self.live_data and not self.bought:
                 # Buy
@@ -29,9 +29,9 @@ class TestStrategy(bt.Strategy):
                 #self.order = self.sell(size=0.002, exectype=Order.Limit, price=3200)
                 #self.order = self.sell(size=0.002, exectype=Order.Market)
                 #self.order = self.buy(size=0.005, exectype=Order.Limit, price=1500)
-                self.order = self.sell(size=0.001, exectype=Order.Limit, price=6000)
+                #self.order = self.sell(size=0.001, exectype=Order.Limit, price=6000)
                 # And immediately cancel the buy order
-                self.cancel(self.order)
+                #self.cancel(self.order)
                 #self.cancel(self.order)
                 self.bought = True
         else:
@@ -64,7 +64,19 @@ class TestStrategy(bt.Strategy):
     def notify_trade(self, trade):
         print('-' * 50, 'TRADE BEGIN', datetime.now())
         print(trade)
-        print('-' * 50, 'TRADE END')            
+        print('-' * 50, 'TRADE END')
+
+    def notify_cashvalue(self, cash, value):
+        '''
+        Receives the current fund value, value status of the strategy's broker
+        '''
+        pass
+
+    def notify_fund(self, cash, value, fundvalue, shares):
+        '''
+        Receives the current cash, value, fundvalue and fund shares
+        '''
+        pass
 
 
 with open('./params.json', 'r') as f:
@@ -83,7 +95,7 @@ config = {'apiKey': params["huobi"]["apikey"],
 # IMPORTANT NOTE - Kraken (and some other exchanges) will not return any values
 # for get cash or value if You have never held any BNB coins in your account.
 # So switch BNB to a coin you have funded previously if you get errors
-store = CCXTStore(exchange='huobipro', currency='ETH', config=config, retries=5, debug=False)
+store = CCXTStore(exchange='huobipro', currency='USDT', config=config, retries=5, debug=False)
 
 # Get the broker and pass any kwargs if needed.
 broker = store.getbroker()
@@ -92,12 +104,12 @@ cerebro.setbroker(broker)
 # Get our data
 # Drop newest will prevent us from loading partial data from incomplete candles
 hist_start_date = datetime.utcnow() - timedelta(minutes=1440)
-data = store.getdata(dataname='ETH/USDT', name="ETHUSDT",
-                     timeframe=bt.TimeFrame.Minutes, fromdate=hist_start_date,
-                     compression=1, ohlcv_limit=1000, drop_newest=True) #, historical=True)
-
-# Add the feed
-cerebro.adddata(data)
+for sym in ['BTC/USDT','ETH/USDT','EOS/USDT']:
+    data = store.getdata(dataname=sym, name=sym,
+                         timeframe=bt.TimeFrame.Minutes, fromdate=hist_start_date,
+                         compression=1, ohlcv_limit=1000, drop_newest=True)
+    # Add the feed
+    cerebro.adddata(data)
 
 # Run the strategy
 cerebro.run()
