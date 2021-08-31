@@ -34,14 +34,15 @@ from .ccxtstore import CCXTStore
 
 
 class CCXTOrder(Order):
-    def __init__(self, owner, data, ccxt_order):
+    def __init__(self, owner, data, exectype, ccxt_order):
         self.owner = owner
         self.data = data
+        self.exectype = exectype
         self.ccxt_order = ccxt_order
         self.executed_fills = []
         self.ordtype = self.Buy if ccxt_order['side'] == 'buy' else self.Sell
         self.size = float(ccxt_order['amount'])
-
+        self.price = float(ccxt_order['price']) if ccxt_order['price'] else None
         super(CCXTOrder, self).__init__()
 
 
@@ -201,6 +202,11 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
         self._next()
 
     def _next(self):
+        """
+        1. 对于现货,不要使用市价单,只使用限价单,需要市价单时候也用限价单去模拟,因为有些交易所的市价单的size字段是金额,backtrader
+        没考虑这种情况会出错,所以这里不适配市价单
+        2. 对于期货,不支持中国期货同一标的同时开多仓和空仓,因为backtrader没考虑这种情况,所以这里我们同一标的同一时间只支持一个方向的仓位
+        """
         for o_order in list(self.open_orders):
             oID = o_order.ccxt_order['id']
 
@@ -211,6 +217,7 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
 
             # Get the order
             ccxt_order = self.store.fetch_order(oID, o_order.data.p.dataname)
+            status = ccxt_order['status']
 
             # Check for new fills
             if 'trades' in ccxt_order and ccxt_order['trades'] is not None: #判断此订单是否有成交
@@ -218,42 +225,61 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
                     if fill not in o_order.executed_fills: #该成交是否被处理
                         fill_id, fill_dt, fill_size, fill_price = fill['id'], fill['datetime'], fill['amount'], fill['price']
                         o_order.executed_fills.append(fill_id) #记录该成交已经被处理
+                        fill_size = fill_size if o_order.isbuy() else -fill_size #满足backtrader规范,卖单或空头仓位用负数表示
                         o_order.execute(fill_dt, fill_size, fill_price, 
                                         0, 0.0, 0.0, 
                                         0, 0.0, 0.0, 
                                         0.0, 0.0,
                                         0, 0.0) #处理该成交,内部会标注订单状态,部分成交还是完全成交
                         #准备通知上层策略
-                        self.get_balance() #刷新账户余额
+                        #self.get_balance() #刷新账户余额 (余额不再更新,减少通信提高性能,可以在策略中根据需要自主去更新)
                         pos = self.getposition(o_order.data, clone=False) #获取对应仓位
                         pos.update(fill_size, fill_price) #刷新仓位
+                        #-------------------------------------------------------------------
+                        #用remain判断是否全部成交在市价买单的情况下可能不靠谱,所以用如下代码判断是否部分或者全部成交
+                        if status == 'open': #有成交的情况下状态仍然是open的话那肯定是部分成交
+                            o_order.partial()
+                        elif status == 'closed': #有成交的情况下如果状态是closed那意味着全部成交
+                            o_order.completed()
+                        #-------------------------------------------------------------------
                         self.notify(o_order.clone()) #通知策略
             else:
-                remaining, status = ccxt_order['remaining'], ccxt_order['status']
-                fill_dt, fill_size, fill_price = ccxt_order['timestamp'], ccxt_order['filled'], ccxt_order['average']
-                o_order.executed.dt = fill_dt
-                o_order.executed.size = fill_size
-                o_order.executed.price = fill_price
-                o_order.executed.remsize = remaining
-                #仓位计算比较麻烦,这里暂时不浪费时间做,需要再说,毕竟只有火币这样奇葩的平台才会这样
-                if status == 'open':
-                    self.get_balance() #刷新账户余额
-                    o_order.partial()
-                    self.notify(o_order.clone()) #通知策略
-                elif status == 'closed':
-                    self.get_balance() #刷新账户余额
-                    o_order.completed()
+                fill_dt, cum_fill_size, average_fill_price = ccxt_order['timestamp'], ccxt_order['filled'], ccxt_order['average']
+                if cum_fill_size > abs(o_order.executed.size): #判断本次是否有新的成交
+                    new_cum_fill_value = cum_fill_size * average_fill_price #累计成交数量*平均成交价=累计成交总价值
+                    old_cum_fill_value = abs(o_order.executed.size) * o_order.executed.price
+                    fill_value = new_cum_fill_value - old_cum_fill_value #本次新成交的价值
+                    fill_size = cum_fill_size - abs(o_order.executed.size) #本次新成交的数量
+                    fill_price = fill_value / fill_size #本次新成交的价格
+                    fill_size = fill_size if o_order.isbuy() else -fill_size #满足backtrader规范,卖单或空头仓位用负数表示
+                    o_order.execute(fill_dt, fill_size, fill_price, 
+                                                        0, 0.0, 0.0, 
+                                                        0, 0.0, 0.0, 
+                                                        0.0, 0.0,
+                                                        0, 0.0) #处理该成交,内部会标注订单状态,部分成交还是完全成交
+                    #准备通知上层策略 
+                    #self.get_balance() #刷新账户余额 (余额不再更新,减少通信提高性能,可以在策略中根据需要自主去更新)
+                    pos = self.getposition(o_order.data, clone=False) #获取对应仓位
+                    pos.update(fill_size, fill_price) #刷新仓位
+                    #-------------------------------------------------------------------
+                    #用remain判断是否全部成交在市价买单的情况下可能不靠谱,所以用如下代码判断是否部分或者全部成交
+                    if status == 'open': #有成交的情况下状态仍然是open的话那肯定是部分成交
+                        o_order.partial()
+                    elif status == 'closed': #有成交的情况下如果状态是closed那意味着全部成交
+                        o_order.completed()
+                    #-------------------------------------------------------------------
                     self.notify(o_order.clone()) #通知策略
 
             if self.debug:
                 print(json.dumps(ccxt_order, indent=self.indent))
 
             # Check if the order is closed
-            if ccxt_order[self.mappings['closed_order']['key']] == self.mappings['closed_order']['value']:
+            if status == 'closed':
                 #如果该订单全部成交完成就是此状态,因为上面已经通知过策略,所以这里不再重复通知
                 self.open_orders.remove(o_order)
-            elif ccxt_order[self.mappings['canceled_order']['key']] == self.mappings['canceled_order']['value']:
+            elif status == 'canceled':
                 #考虑两种情况:用户下了限价单没有成交,直接取消了,用户下了限价单部分成交,然后再取消
+                #self.get_balance() #刷新账户余额 (余额不再更新,减少通信提高性能,可以在策略中根据需要自主去更新)
                 o_order.cancel() #标注订单为取消状态
                 self.notify(o_order.clone()) #通知策略
                 self.open_orders.remove(o_order)
@@ -264,13 +290,11 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
         # Extract CCXT specific params if passed to the order
         params = params['params'] if 'params' in params else params
         params['created'] = created  # Add timestamp of order creation for backtesting
-        ret_ord = self.store.create_order(symbol=data.p.dataname, order_type=order_type, side=side,
-                                          amount=amount, price=price, params=params)
-        _order = self.store.fetch_order(ret_ord['id'], data.p.dataname)
-        order = CCXTOrder(owner, data, _order)
-        order.price = ret_ord['price']
+        ret_ord = self.store.create_order(symbol=data.p.dataname, order_type=order_type, side=side, amount=amount, price=price, params=params)
+        order = CCXTOrder(owner, data, exectype, ret_ord)
         self.open_orders.append(order)
-        self.notify(order.clone())
+        self.notify(order.clone()) #先发一个订单创建通知
+        self._next() #然后判断订单是否已经成交,有成交就发通知
         return order
 
     def buy(self, owner, data, size, price=None, plimit=None,
@@ -315,9 +339,9 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
             print('Value Received: {}'.format(ccxt_order[self.mappings['canceled_order']['key']]))
             print('Value Expected: {}'.format(self.mappings['canceled_order']['value']))
 
-        #统一在next函数中处理
+        #统一在next函数中处理策略通知
         self._next()
-        if ccxt_order[self.mappings['canceled_order']['key']] == self.mappings['canceled_order']['value']:
+        if ccxt_order['status'] == 'canceled':
             order.cancel()
 
         return order

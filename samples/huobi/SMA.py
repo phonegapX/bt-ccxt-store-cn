@@ -26,7 +26,10 @@ class TestStrategy(bt.Strategy):
                 # Buy
                 # size x price should be >10 USDT at a minimum at Binance
                 # make sure you use a price that is below the market price if you don't want to actually buy
-                self.order = self.buy(size=0.002, exectype=Order.Limit, price=3400)
+                #self.order = self.sell(size=0.002, exectype=Order.Limit, price=3200)
+                #self.order = self.sell(size=0.002, exectype=Order.Market)
+                #self.order = self.buy(size=0.005, exectype=Order.Limit, price=1500)
+                self.order = self.sell(size=0.001, exectype=Order.Limit, price=6000)
                 # And immediately cancel the buy order
                 self.cancel(self.order)
                 #self.cancel(self.order)
