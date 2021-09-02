@@ -28,14 +28,14 @@ class TestStrategy(bt.Strategy):
                 # make sure you use a price that is below the market price if you don't want to actually buy
                 #self.order = self.sell(size=0.002, exectype=Order.Limit, price=3200)
                 #self.order = self.sell(size=0.002, exectype=Order.Market)
-                #self.order = self.buy(size=0.005, exectype=Order.Limit, price=1500)
+                #self.order = self.buy(size=0.001, exectype=Order.Limit, price=50000)
 
                 #对于火币和OKEX这类的交易所,他们现货的市价买单size字段其实传入的是`要花费的金额`,而不是要购买的数量,
                 #但是ccxt库在实现的时候为了统一接口,玩了点小技巧,仍然是按size=购买数量,price=购买价格来传参数,
                 #然后在内部计算size*price=`要花费的金额`后,再把真正的参数`要花费的金额`传给交易所.
                 #记住,因为是市价成交所以最后实际成交数量不一定等于传入的size数量!
                 #所以在这种情况下,backtrader平台内部的order.executed.remsize不可信,详见backtrader代码
-                #self.order = self.buy(size=0.001, exectype=Order.Market, price=3200)
+                self.order = self.buy(size=0.001, exectype=Order.Market, price=50000)
                 # And immediately cancel the buy order
                 #self.cancel(self.order)
                 #self.cancel(self.order)
@@ -95,14 +95,15 @@ cerebro = bt.Cerebro(quicknotify=True, live=True)
 cerebro.addstrategy(TestStrategy)
 
 # Create our store
-config = {'apiKey': params["huobi"]["apikey"],
-          'secret': params["huobi"]["secret"],
+config = {'apiKey': params["okex"]["apikey"],
+          'secret': params["okex"]["secret"],
+          'password': params["okex"]["password"],
           'enableRateLimit': True,}
 
 # IMPORTANT NOTE - Kraken (and some other exchanges) will not return any values
 # for get cash or value if You have never held any BNB coins in your account.
 # So switch BNB to a coin you have funded previously if you get errors
-store = CCXTStore(exchange='huobipro', currency='USDT', config=config, retries=5, debug=False)
+store = CCXTStore(exchange='okex5', currency='USDT', config=config, retries=5, debug=False)
 
 # Get the broker and pass any kwargs if needed.
 broker = store.getbroker()

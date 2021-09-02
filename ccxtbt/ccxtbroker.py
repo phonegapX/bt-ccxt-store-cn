@@ -18,12 +18,10 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 ###############################################################################
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
+from __future__ import (absolute_import, division, print_function, unicode_literals)
 
 import collections
 import json
-import copy
 from datetime import datetime
 
 from backtrader import BrokerBase, Order
@@ -34,15 +32,15 @@ from .ccxtstore import CCXTStore
 
 
 class CCXTOrder(Order):
-    def __init__(self, owner, data, exectype, ccxt_order):
+    def __init__(self, owner, data, exectype, side, amount, price, ccxt_order):
         self.owner = owner
         self.data = data
         self.exectype = exectype
+        self.ordtype = self.Buy if side == 'buy' else self.Sell
+        self.size = float(amount)
+        self.price = float(price) if price else None
         self.ccxt_order = ccxt_order
         self.executed_fills = []
-        self.ordtype = self.Buy if ccxt_order['side'] == 'buy' else self.Sell
-        self.size = float(ccxt_order['amount'])
-        self.price = float(ccxt_order['price']) if ccxt_order['price'] else None
         super(CCXTOrder, self).__init__()
 
 
@@ -141,7 +139,7 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
 
         self.startingcash = self.store._cash
         self.startingvalue = self.store._value
-        
+
         self._last_op_time = 0
 
     def get_balance(self):
@@ -154,11 +152,9 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
         result = {}
         balance = self.store.get_wallet_balance(params=params)
         for currency in currencys:
-            cash = balance['free'][currency] if balance['free'][currency] else 0
-            value = balance['total'][currency] if balance['total'][currency] else 0
             result[currency] = {}
-            result[currency]['cash'] = cash
-            result[currency]['value'] = value
+            result[currency]['cash'] = balance['free'].get(currency, 0)
+            result[currency]['value'] = balance['total'].get(currency, 0)
         return result
 
     def getcash(self):
@@ -236,7 +232,7 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
                         pos = self.getposition(o_order.data, clone=False) #获取对应仓位
                         pos.update(fill_size, fill_price) #刷新仓位
                         #-------------------------------------------------------------------
-                        #用remain判断是否全部成交在市价买单的情况下可能不靠谱,所以用如下代码判断是否部分或者全部成交
+                        #用order.executed.remsize判断是否全部成交在市价买单的情况下可能不靠谱,所以用如下代码判断是否部分或者全部成交
                         if status == 'open': #有成交的情况下状态仍然是open的话那肯定是部分成交
                             o_order.partial()
                         elif status == 'closed': #有成交的情况下如果状态是closed那意味着全部成交
@@ -262,7 +258,7 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
                     pos = self.getposition(o_order.data, clone=False) #获取对应仓位
                     pos.update(fill_size, fill_price) #刷新仓位
                     #-------------------------------------------------------------------
-                    #用remain判断是否全部成交在市价买单的情况下可能不靠谱,所以用如下代码判断是否部分或者全部成交
+                    #用order.executed.remsize判断是否全部成交在市价买单的情况下可能不靠谱,所以用如下代码判断是否部分或者全部成交
                     if status == 'open': #有成交的情况下状态仍然是open的话那肯定是部分成交
                         o_order.partial()
                     elif status == 'closed': #有成交的情况下如果状态是closed那意味着全部成交
@@ -291,7 +287,7 @@ class CCXTBroker(with_metaclass(MetaCCXTBroker, BrokerBase)):
         params = params['params'] if 'params' in params else params
         params['created'] = created  # Add timestamp of order creation for backtesting
         ret_ord = self.store.create_order(symbol=data.p.dataname, order_type=order_type, side=side, amount=amount, price=price, params=params)
-        order = CCXTOrder(owner, data, exectype, ret_ord)
+        order = CCXTOrder(owner, data, exectype, side, amount, price, ret_ord)
         self.open_orders.append(order)
         self.notify(order.clone()) #先发一个订单创建通知
         self._next() #然后判断订单是否已经成交,有成交就发通知

@@ -18,8 +18,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 ###############################################################################
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
+from __future__ import (absolute_import, division, print_function, unicode_literals)
 
 import time
 from datetime import datetime
@@ -41,8 +40,7 @@ class MetaSingleton(MetaParams):
 
     def __call__(cls, *args, **kwargs):
         if cls._singleton is None:
-            cls._singleton = (
-                super(MetaSingleton, cls).__call__(*args, **kwargs))
+            cls._singleton = (super(MetaSingleton, cls).__call__(*args, **kwargs))
 
         return cls._singleton
 
@@ -154,7 +152,6 @@ class CCXTStore(with_metaclass(MetaSingleton, object)):
     @retry
     def get_balance(self):
         balance = self.exchange.fetch_balance()
-
         cash = balance['free'][self.currency]
         value = balance['total'][self.currency]
         # Fix if None is returned
@@ -164,7 +161,6 @@ class CCXTStore(with_metaclass(MetaSingleton, object)):
     @retry
     def getposition(self):
         return self._value
-        # return self.getvalue(currency)
 
     @retry
     def create_order(self, symbol, order_type, side, amount, price, params):
